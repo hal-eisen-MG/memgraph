@@ -15,12 +15,20 @@ import pytest
 from common import connect, execute_and_fetch_all
 
 
+def test_assert_fails_in_explicit_txn():
+    cursor = connect().cursor()
+    execute_and_fetch_all(cursor, "BEGIN")
+    with pytest.raises(Exception) as e:
+        execute_and_fetch_all(cursor, "CALL schema.assert({}, {}, {}, true) YIELD * RETURN *;")
+    assert str(e.value) == "SCHEMA.ASSERT not allowed in multicommand transactions."
+
+
 def test_assert_creates_label_index_empty_list():
     cursor = connect().cursor()
     results = list(
         execute_and_fetch_all(
             cursor,
-            "CALL libschema.assert({Person: []}, {}) YIELD * RETURN *;",
+            "CALL schema.assert({Person: []}, {}) YIELD * RETURN *;",
         )
     )
     assert results == [("Created", "", [], "Person", False)]
@@ -34,7 +42,7 @@ def test_assert_creates_label_index_empty_string():
     results = list(
         execute_and_fetch_all(
             cursor,
-            "CALL libschema.assert({Person: ['']}, {}) YIELD * RETURN *;",
+            "CALL schema.assert({Person: ['']}, {}) YIELD * RETURN *;",
         )
     )
     assert results == [("Created", "", [], "Person", False)]
@@ -47,7 +55,7 @@ def test_assert_index_wrong_properties_type():
     cursor = connect().cursor()
     execute_and_fetch_all(
         cursor,
-        "CALL libschema.assert({Person: ''}, {}) YIELD * RETURN *;",
+        "CALL schema.assert({Person: ''}, {}) YIELD * RETURN *;",
     )
     assert list(execute_and_fetch_all(cursor, "SHOW INDEX INFO;")) == []
 
@@ -56,7 +64,7 @@ def test_assert_property_is_not_a_string():
     cursor = connect().cursor()
     execute_and_fetch_all(
         cursor,
-        "CALL libschema.assert({Person: ['name', 1]}, {}) YIELD * RETURN *;",
+        "CALL schema.assert({Person: ['name', 1]}, {}) YIELD * RETURN *;",
     )
     show_index_results = list(execute_and_fetch_all(cursor, "SHOW INDEX INFO;"))
     assert show_index_results == [("label+property", "Person", "name", 0)]
@@ -68,7 +76,7 @@ def test_assert_creates_label_index_multiple_empty_strings():
     results = list(
         execute_and_fetch_all(
             cursor,
-            "CALL libschema.assert({Person: ['', '', '', '']}, {}) YIELD * RETURN *;",
+            "CALL schema.assert({Person: ['', '', '', '']}, {}) YIELD * RETURN *;",
         )
     )
     assert results == [("Created", "", [], "Person", False)]
@@ -82,7 +90,7 @@ def test_assert_creates_label_property_index():
     results = list(
         execute_and_fetch_all(
             cursor,
-            "CALL libschema.assert({Person: ['name']}, {}) YIELD * RETURN *;",
+            "CALL schema.assert({Person: ['name']}, {}) YIELD * RETURN *;",
         )
     )
     assert results == [("Created", "name", ["name"], "Person", False)]
@@ -96,7 +104,7 @@ def test_assert_creates_multiple_indices():
     results = list(
         execute_and_fetch_all(
             cursor,
-            "CALL libschema.assert({Person: ['', 'id', 'name'], Ball: ['', 'size', 'size', '']}, {}) YIELD * RETURN *;",
+            "CALL schema.assert({Person: ['', 'id', 'name'], Ball: ['', 'size', 'size', '']}, {}) YIELD * RETURN *;",
         )
     )
     assert len(results) == 5
@@ -124,7 +132,7 @@ def test_assert_creates_existence_constraints():
     results = list(
         execute_and_fetch_all(
             cursor,
-            "CALL libschema.assert({}, {}, {Person: ['name', 'surname']}) YIELD * RETURN *;",
+            "CALL schema.assert({}, {}, {Person: ['name', 'surname']}) YIELD * RETURN *;",
         )
     )
     assert results == [
@@ -133,7 +141,7 @@ def test_assert_creates_existence_constraints():
     ]
     assert list(execute_and_fetch_all(cursor, "SHOW INDEX INFO;")) == []
     show_constraint_results = list(execute_and_fetch_all(cursor, "SHOW CONSTRAINT INFO;"))
-    assert show_constraint_results == [("exists", "Person", "name"), ("exists", "Person", "surname")]
+    assert show_constraint_results == [("exists", "Person", "name", ""), ("exists", "Person", "surname", "")]
     execute_and_fetch_all(cursor, "DROP CONSTRAINT ON (n:Person) ASSERT EXISTS (n.name);")
     execute_and_fetch_all(cursor, "DROP CONSTRAINT ON (n:Person) ASSERT EXISTS (n.surname);")
 
@@ -144,7 +152,7 @@ def test_assert_dropping_indices():
     execute_and_fetch_all(cursor, "CREATE INDEX ON :Person(id);")
     execute_and_fetch_all(cursor, "CREATE INDEX ON :Ball(size);")
     execute_and_fetch_all(cursor, "CREATE INDEX ON :Ball;")
-    results = list(execute_and_fetch_all(cursor, "CALL libschema.assert({}, {}) YIELD * RETURN *;"))
+    results = list(execute_and_fetch_all(cursor, "CALL schema.assert({}, {}) YIELD * RETURN *;"))
     assert len(results) == 4
     assert results[0] == ("Dropped", "", [], "Ball", False)
     assert results[1] == ("Dropped", "size", ["size"], "Ball", False)
@@ -156,21 +164,21 @@ def test_assert_dropping_indices():
 
 def test_assert_existence_constraint_properties_not_list():
     cursor = connect().cursor()
-    execute_and_fetch_all(cursor, "CALL libschema.assert({}, {}, {Person: 'name'}) YIELD * RETURN *;")
+    execute_and_fetch_all(cursor, "CALL schema.assert({}, {}, {Person: 'name'}) YIELD * RETURN *;")
     assert list(execute_and_fetch_all(cursor, "SHOW CONSTRAINT INFO;")) == []
 
 
 def test_assert_existence_constraint_property_not_string():
     cursor = connect().cursor()
-    execute_and_fetch_all(cursor, "CALL libschema.assert({}, {}, {Person: ['name', 1]}) YIELD * RETURN *;")
+    execute_and_fetch_all(cursor, "CALL schema.assert({}, {}, {Person: ['name', 1]}) YIELD * RETURN *;")
     show_constraint_results = list(execute_and_fetch_all(cursor, "SHOW CONSTRAINT INFO;"))
-    assert show_constraint_results == [("exists", "Person", "name")]
+    assert show_constraint_results == [("exists", "Person", "name", "")]
     execute_and_fetch_all(cursor, "DROP CONSTRAINT ON (n:Person) ASSERT EXISTS (n.name);")
 
 
 def test_assert_existence_constraint_property_empty_string():
     cursor = connect().cursor()
-    execute_and_fetch_all(cursor, "CALL libschema.assert({}, {}, {Person: ['']}) YIELD * RETURN *;")
+    execute_and_fetch_all(cursor, "CALL schema.assert({}, {}, {Person: ['']}) YIELD * RETURN *;")
     assert list(execute_and_fetch_all(cursor, "SHOW CONSTRAINT INFO;")) == []
 
 
@@ -179,7 +187,7 @@ def test_assert_creates_indices_and_existence_constraints():
     results = list(
         execute_and_fetch_all(
             cursor,
-            "CALL libschema.assert({Person: ['', 'id']}, {}, {Person: ['name', 'surname']}) YIELD * RETURN *;",
+            "CALL schema.assert({Person: ['', 'id']}, {}, {Person: ['name', 'surname']}) YIELD * RETURN *;",
         )
     )
     assert len(results) == 4
@@ -190,7 +198,7 @@ def test_assert_creates_indices_and_existence_constraints():
     show_index_results = list(execute_and_fetch_all(cursor, "SHOW INDEX INFO;"))
     assert show_index_results == [("label", "Person", None, 0), ("label+property", "Person", "id", 0)]
     show_constraint_results = list(execute_and_fetch_all(cursor, "SHOW CONSTRAINT INFO;"))
-    assert show_constraint_results == [("exists", "Person", "name"), ("exists", "Person", "surname")]
+    assert show_constraint_results == [("exists", "Person", "name", ""), ("exists", "Person", "surname", "")]
     execute_and_fetch_all(cursor, "DROP INDEX ON :Person;")
     execute_and_fetch_all(cursor, "DROP INDEX ON :Person(id);")
     execute_and_fetch_all(cursor, "DROP CONSTRAINT ON (n:Person) ASSERT EXISTS (n.name);")
@@ -201,7 +209,7 @@ def test_assert_drops_existence_constraints():
     cursor = connect().cursor()
     execute_and_fetch_all(cursor, "CREATE CONSTRAINT ON (n:Person) ASSERT EXISTS (n.name);")
     execute_and_fetch_all(cursor, "CREATE CONSTRAINT ON (n:Person) ASSERT EXISTS (n.surname);")
-    results = list(execute_and_fetch_all(cursor, "CALL libschema.assert({}, {}, {}) YIELD * RETURN *;"))
+    results = list(execute_and_fetch_all(cursor, "CALL schema.assert({}, {}, {}) YIELD * RETURN *;"))
     assert len(results) == 2
     assert results[0] == ("Dropped", "name", ["name"], "Person", False)
     assert results[1] == ("Dropped", "surname", ["surname"], "Person", False)
@@ -214,13 +222,13 @@ def test_assert_creates_unique_constraints():
     results = list(
         execute_and_fetch_all(
             cursor,
-            "CALL libschema.assert({}, {Person: [['name', 'surname']]}) YIELD * RETURN *;",
+            "CALL schema.assert({}, {Person: [['name', 'surname']]}) YIELD * RETURN *;",
         )
     )
     assert results == [("Created", "[name, surname]", ["name", "surname"], "Person", True)]
     assert list(execute_and_fetch_all(cursor, "SHOW INDEX INFO;")) == []
     show_constraint_results = list(execute_and_fetch_all(cursor, "SHOW CONSTRAINT INFO;"))
-    assert show_constraint_results == [("unique", "Person", ["name", "surname"])]
+    assert show_constraint_results == [("unique", "Person", ["name", "surname"], "")]
     execute_and_fetch_all(cursor, "DROP CONSTRAINT ON (n:Person) ASSERT n.name, n.surname IS UNIQUE;")
 
 
@@ -229,7 +237,7 @@ def test_assert_creates_multiple_unique_constraints():
     results = list(
         execute_and_fetch_all(
             cursor,
-            "CALL libschema.assert({}, {Person: [['name', 'surname'], ['id']]}) YIELD * RETURN *;",
+            "CALL schema.assert({}, {Person: [['name', 'surname'], ['id']]}) YIELD * RETURN *;",
         )
     )
     assert results == [
@@ -238,7 +246,7 @@ def test_assert_creates_multiple_unique_constraints():
     ]
     assert list(execute_and_fetch_all(cursor, "SHOW INDEX INFO;")) == []
     show_constraint_results = list(execute_and_fetch_all(cursor, "SHOW CONSTRAINT INFO;"))
-    assert show_constraint_results == [("unique", "Person", ["name", "surname"]), ("unique", "Person", ["id"])]
+    assert show_constraint_results == [("unique", "Person", ["name", "surname"], ""), ("unique", "Person", ["id"], "")]
     execute_and_fetch_all(cursor, "DROP CONSTRAINT ON (n:Person) ASSERT n.name, n.surname IS UNIQUE;")
     execute_and_fetch_all(cursor, "DROP CONSTRAINT ON (n:Person) ASSERT n.id IS UNIQUE;")
 
@@ -248,13 +256,13 @@ def test_assert_creates_unique_constraints_skip_invalid():
     results = list(
         execute_and_fetch_all(
             cursor,
-            "CALL libschema.assert({}, {Person: [['name', 'surname'], 'wrong_type']}) YIELD * RETURN *;",
+            "CALL schema.assert({}, {Person: [['name', 'surname'], 'wrong_type']}) YIELD * RETURN *;",
         )
     )
     assert results == [("Created", "[name, surname]", ["name", "surname"], "Person", True)]
     assert list(execute_and_fetch_all(cursor, "SHOW INDEX INFO;")) == []
     show_constraint_results = list(execute_and_fetch_all(cursor, "SHOW CONSTRAINT INFO;"))
-    assert show_constraint_results == [("unique", "Person", ["name", "surname"])]
+    assert show_constraint_results == [("unique", "Person", ["name", "surname"], "")]
     execute_and_fetch_all(cursor, "DROP CONSTRAINT ON (n:Person) ASSERT n.name, n.surname IS UNIQUE;")
 
 
@@ -263,13 +271,13 @@ def test_assert_creates_unique_constraints_skip_invalid_map_type():
     results = list(
         execute_and_fetch_all(
             cursor,
-            "CALL libschema.assert({}, {Person: [['name', 'surname']], Ball: 'wrong_type'}) YIELD * RETURN *;",
+            "CALL schema.assert({}, {Person: [['name', 'surname']], Ball: 'wrong_type'}) YIELD * RETURN *;",
         )
     )
     assert results == [("Created", "[name, surname]", ["name", "surname"], "Person", True)]
     assert list(execute_and_fetch_all(cursor, "SHOW INDEX INFO;")) == []
     show_constraint_results = list(execute_and_fetch_all(cursor, "SHOW CONSTRAINT INFO;"))
-    assert show_constraint_results == [("unique", "Person", ["name", "surname"])]
+    assert show_constraint_results == [("unique", "Person", ["name", "surname"], "")]
     execute_and_fetch_all(cursor, "DROP CONSTRAINT ON (n:Person) ASSERT n.name, n.surname IS UNIQUE;")
 
 
@@ -278,7 +286,7 @@ def test_assert_creates_constraints_and_indices():
     results = list(
         execute_and_fetch_all(
             cursor,
-            "CALL libschema.assert({Person: ['', 'id']}, {Person: [['name', 'surname'], ['id']]}, {Person: ['name', 'surname']}) YIELD * RETURN *;",
+            "CALL schema.assert({Person: ['', 'id']}, {Person: [['name', 'surname'], ['id']]}, {Person: ['name', 'surname']}) YIELD * RETURN *;",
         )
     )
     assert len(results) == 6
@@ -292,10 +300,10 @@ def test_assert_creates_constraints_and_indices():
     assert show_index_results == [("label", "Person", None, 0), ("label+property", "Person", "id", 0)]
     show_constraint_results = list(execute_and_fetch_all(cursor, "SHOW CONSTRAINT INFO;"))
     assert show_constraint_results == [
-        ("exists", "Person", "name"),
-        ("exists", "Person", "surname"),
-        ("unique", "Person", ["name", "surname"]),
-        ("unique", "Person", ["id"]),
+        ("exists", "Person", "name", ""),
+        ("exists", "Person", "surname", ""),
+        ("unique", "Person", ["name", "surname"], ""),
+        ("unique", "Person", ["id"], ""),
     ]
     execute_and_fetch_all(cursor, "DROP CONSTRAINT ON (n:Person) ASSERT n.name, n.surname IS UNIQUE;")
     execute_and_fetch_all(cursor, "DROP CONSTRAINT ON (n:Person) ASSERT n.id IS UNIQUE;")
@@ -309,7 +317,7 @@ def test_assert_drops_unique_constraints():
     cursor = connect().cursor()
     execute_and_fetch_all(cursor, "CREATE CONSTRAINT ON (n:Person) ASSERT n.name, n.surname IS UNIQUE;")
     execute_and_fetch_all(cursor, "CREATE CONSTRAINT ON (n:Person) ASSERT n.id IS UNIQUE;")
-    results = list(execute_and_fetch_all(cursor, "CALL libschema.assert({}, {}, {}) YIELD * RETURN *;"))
+    results = list(execute_and_fetch_all(cursor, "CALL schema.assert({}, {}, {}) YIELD * RETURN *;"))
     assert len(results) == 2
     assert results[0] == ("Dropped", "[id]", ["id"], "Person", True)
     assert results[1] == ("Dropped", "[name, surname]", ["name", "surname"], "Person", True)
@@ -325,7 +333,7 @@ def test_assert_drops_indices_and_constraints():
     execute_and_fetch_all(cursor, "CREATE CONSTRAINT ON (n:Person) ASSERT n.id IS UNIQUE;")
     execute_and_fetch_all(cursor, "CREATE CONSTRAINT ON (n:Person) ASSERT EXISTS (n.name);")
     execute_and_fetch_all(cursor, "CREATE CONSTRAINT ON (n:Person) ASSERT EXISTS (n.surname);")
-    results = list(execute_and_fetch_all(cursor, "CALL libschema.assert({}, {}, {}) YIELD * RETURN *;"))
+    results = list(execute_and_fetch_all(cursor, "CALL schema.assert({}, {}, {}) YIELD * RETURN *;"))
     assert len(results) == 6
     assert results[0] == ("Dropped", "", [], "Person", False)
     assert results[1] == ("Dropped", "id", ["id"], "Person", False)
@@ -347,16 +355,16 @@ def test_assert_does_not_drop_indices_and_constraints():
     execute_and_fetch_all(cursor, "CREATE CONSTRAINT ON (n:Person) ASSERT n.id IS UNIQUE;")
     execute_and_fetch_all(cursor, "CREATE CONSTRAINT ON (n:Person) ASSERT EXISTS (n.name);")
     execute_and_fetch_all(cursor, "CREATE CONSTRAINT ON (n:Person) ASSERT EXISTS (n.surname);")
-    results = list(execute_and_fetch_all(cursor, "CALL libschema.assert({}, {}, {}, false) YIELD * RETURN *;"))
+    results = list(execute_and_fetch_all(cursor, "CALL schema.assert({}, {}, {}, false) YIELD * RETURN *;"))
     assert len(results) == 0
     show_index_results = list(execute_and_fetch_all(cursor, "SHOW INDEX INFO;"))
     assert show_index_results == [("label", "Person", None, 0), ("label+property", "Person", "id", 0)]
     show_constraint_results = list(execute_and_fetch_all(cursor, "SHOW CONSTRAINT INFO;"))
     assert show_constraint_results == [
-        ("exists", "Person", "name"),
-        ("exists", "Person", "surname"),
-        ("unique", "Person", ["name", "surname"]),
-        ("unique", "Person", ["id"]),
+        ("exists", "Person", "name", ""),
+        ("exists", "Person", "surname", ""),
+        ("unique", "Person", ["name", "surname"], ""),
+        ("unique", "Person", ["id"], ""),
     ]
     execute_and_fetch_all(cursor, "DROP INDEX ON :Person;")
     execute_and_fetch_all(cursor, "DROP INDEX ON :Person(id);")
@@ -364,59 +372,6 @@ def test_assert_does_not_drop_indices_and_constraints():
     execute_and_fetch_all(cursor, "DROP CONSTRAINT ON (n:Person) ASSERT n.id IS UNIQUE;")
     execute_and_fetch_all(cursor, "DROP CONSTRAINT ON (n:Person) ASSERT EXISTS (n.name);")
     execute_and_fetch_all(cursor, "DROP CONSTRAINT ON (n:Person) ASSERT EXISTS (n.surname);")
-
-
-def test_assert_keeps_existing_indices_and_constraints():
-    cursor = connect().cursor()
-    assert list(execute_and_fetch_all(cursor, "SHOW INDEX INFO;")) == []
-    assert list(execute_and_fetch_all(cursor, "SHOW CONSTRAINT INFO;")) == []
-    execute_and_fetch_all(cursor, "CREATE INDEX ON :Person;")
-    execute_and_fetch_all(cursor, "CREATE INDEX ON :Person(id);")
-    execute_and_fetch_all(cursor, "CREATE CONSTRAINT ON (n:Person) ASSERT n.name, n.surname IS UNIQUE;")
-    execute_and_fetch_all(cursor, "CREATE CONSTRAINT ON (n:Person) ASSERT n.id IS UNIQUE;")
-    execute_and_fetch_all(cursor, "CREATE CONSTRAINT ON (n:Person) ASSERT EXISTS (n.name);")
-    execute_and_fetch_all(cursor, "CREATE CONSTRAINT ON (n:Person) ASSERT EXISTS (n.surname);")
-    results = list(
-        execute_and_fetch_all(
-            cursor,
-            "CALL libschema.assert({Person: ['id']}, {Person: [['name', 'surname']]}, {Person: ['name']}) YIELD * RETURN *;",
-        )
-    )
-
-    print(results)
-
-    assert len(results) == 6
-
-    assert results[0] == ("Kept", "id", ["id"], "Person", False)  # label+property index on Person(id) should be kept
-    assert results[1] == ("Dropped", "", [], "Person", False)  # label index on Person should be deleted
-    assert results[2] == (
-        "Kept",
-        "name",
-        ["name"],
-        "Person",
-        False,
-    )  # existence constraint on Person(name) should be kept
-    assert results[3] == (
-        "Dropped",
-        "surname",
-        ["surname"],
-        "Person",
-        False,
-    )  # existence constraint on surname should be deleted
-    assert results[4] == (
-        "Kept",
-        "[name, surname]",
-        ["name", "surname"],
-        "Person",
-        True,
-    )  # unique constraint on Person(name, surname) should be kept
-    assert results[5] == (
-        "Dropped",
-        "[id]",
-        ["id"],
-        "Person",
-        True,
-    )  # unique constraint on Person(id) should be deleted
 
 
 def test_node_type_properties1():
@@ -428,7 +383,7 @@ def test_node_type_properties1():
     result = list(
         execute_and_fetch_all(
             cursor,
-            f"CALL libschema.node_type_properties() YIELD nodeType, nodeLabels, propertyName, propertyTypes , mandatory RETURN nodeType, nodeLabels, propertyName, propertyTypes , mandatory ORDER BY propertyName, nodeLabels[0];",
+            f"CALL schema.node_type_properties() YIELD nodeType, nodeLabels, propertyName, propertyTypes , mandatory RETURN nodeType, nodeLabels, propertyName, propertyTypes , mandatory ORDER BY propertyName, nodeLabels[0];",
         )[0]
     )
     assert (result) == [":`Activity`", ["Activity"], "location", ["String"], True]
@@ -436,7 +391,7 @@ def test_node_type_properties1():
     result = list(
         execute_and_fetch_all(
             cursor,
-            f"CALL libschema.node_type_properties() YIELD nodeType, nodeLabels, propertyName, propertyTypes , mandatory RETURN nodeType, nodeLabels, propertyName, propertyTypes , mandatory ORDER BY propertyName, nodeLabels[0];",
+            f"CALL schema.node_type_properties() YIELD nodeType, nodeLabels, propertyName, propertyTypes , mandatory RETURN nodeType, nodeLabels, propertyName, propertyTypes , mandatory ORDER BY propertyName, nodeLabels[0];",
         )[1]
     )
     assert (result) == [":`Activity`", ["Activity"], "name", ["String"], True]
@@ -444,7 +399,7 @@ def test_node_type_properties1():
     result = list(
         execute_and_fetch_all(
             cursor,
-            f"CALL libschema.node_type_properties() YIELD nodeType, nodeLabels, propertyName, propertyTypes , mandatory RETURN nodeType, nodeLabels, propertyName, propertyTypes , mandatory ORDER BY propertyName, nodeLabels[0];",
+            f"CALL schema.node_type_properties() YIELD nodeType, nodeLabels, propertyName, propertyTypes , mandatory RETURN nodeType, nodeLabels, propertyName, propertyTypes , mandatory ORDER BY propertyName, nodeLabels[0];",
         )[2]
     )
     assert (result) == [":`Dog`", ["Dog"], "name", ["String"], True]
@@ -452,10 +407,127 @@ def test_node_type_properties1():
     result = list(
         execute_and_fetch_all(
             cursor,
-            f"CALL libschema.node_type_properties() YIELD nodeType, nodeLabels, propertyName, propertyTypes , mandatory RETURN nodeType, nodeLabels, propertyName, propertyTypes , mandatory ORDER BY propertyName, nodeLabels[0];",
+            f"CALL schema.node_type_properties() YIELD nodeType, nodeLabels, propertyName, propertyTypes , mandatory RETURN nodeType, nodeLabels, propertyName, propertyTypes , mandatory ORDER BY propertyName, nodeLabels[0];",
         )[3]
     )
     assert (result) == [":`Dog`", ["Dog"], "owner", ["String"], True]
+
+
+def test_node_type_properties2():
+    cursor = connect().cursor()
+    execute_and_fetch_all(
+        cursor,
+        """
+        CREATE (d:MyNode)
+        CREATE (n:MyNode)
+        """,
+    )
+    result = execute_and_fetch_all(
+        cursor,
+        f"CALL schema.node_type_properties() YIELD nodeType, nodeLabels, propertyName, propertyTypes , mandatory RETURN nodeType, nodeLabels, propertyName, propertyTypes , mandatory ORDER BY propertyName, nodeLabels[0];",
+    )
+
+    assert (list(result[0])) == [":`MyNode`", ["MyNode"], "", [], False]
+    assert (result.__len__()) == 1
+
+
+def test_node_type_properties3():
+    cursor = connect().cursor()
+    execute_and_fetch_all(
+        cursor,
+        """
+        CREATE (d:Dog {name: 'Rex', owner: 'Carl'})
+        CREATE (n:Dog)
+        """,
+    )
+    result = execute_and_fetch_all(
+        cursor,
+        f"CALL schema.node_type_properties() YIELD nodeType, nodeLabels, propertyName, propertyTypes , mandatory RETURN nodeType, nodeLabels, propertyName, propertyTypes , mandatory ORDER BY propertyName, nodeLabels[0];",
+    )
+
+    assert (list(result[0])) == [":`Dog`", ["Dog"], "name", ["String"], False]
+    assert (list(result[1])) == [":`Dog`", ["Dog"], "owner", ["String"], False]
+    assert (result.__len__()) == 2
+
+
+def test_node_type_properties4():
+    cursor = connect().cursor()
+    execute_and_fetch_all(
+        cursor,
+        """
+        CREATE (n:Label1:Label2 {property1: 'value1', property2: 'value2'})
+        CREATE (m:Label2:Label1 {property3: 'value3'})
+        """,
+    )
+    result = list(
+        execute_and_fetch_all(
+            cursor,
+            f"CALL schema.node_type_properties() YIELD nodeType, nodeLabels, propertyName, propertyTypes , mandatory RETURN nodeType, nodeLabels, propertyName, propertyTypes , mandatory ORDER BY propertyName, nodeLabels[0];",
+        )
+    )
+    assert (list(result[0])) == [":`Label1`:`Label2`", ["Label1", "Label2"], "property1", ["String"], False]
+    assert (list(result[1])) == [":`Label1`:`Label2`", ["Label1", "Label2"], "property2", ["String"], False]
+    assert (list(result[2])) == [":`Label1`:`Label2`", ["Label1", "Label2"], "property3", ["String"], False]
+    assert (result.__len__()) == 3
+
+
+def test_node_type_properties5():
+    cursor = connect().cursor()
+    execute_and_fetch_all(
+        cursor,
+        """
+        CREATE (d:Dog {name: 'Rex'})
+        """,
+    )
+    result = execute_and_fetch_all(
+        cursor,
+        f"CALL schema.node_type_properties() YIELD nodeType, nodeLabels, propertyName, propertyTypes , mandatory RETURN nodeType, nodeLabels, propertyName, propertyTypes , mandatory ORDER BY propertyName, nodeLabels[0];",
+    )
+
+    assert (list(result[0])) == [":`Dog`", ["Dog"], "name", ["String"], True]
+    assert (result.__len__()) == 1
+
+
+def test_node_type_properties6():
+    cursor = connect().cursor()
+    execute_and_fetch_all(
+        cursor,
+        """
+        CREATE (d:Dog {name: 'Rex'})
+        CREATE (n:Dog {name: 'Simba', owner: 'Lucy'})
+        """,
+    )
+    result = execute_and_fetch_all(
+        cursor,
+        f"CALL schema.node_type_properties() YIELD nodeType, nodeLabels, propertyName, propertyTypes , mandatory RETURN nodeType, nodeLabels, propertyName, propertyTypes , mandatory ORDER BY propertyName, nodeLabels[0];",
+    )
+
+    assert (list(result[0])) == [":`Dog`", ["Dog"], "name", ["String"], True]
+    assert (list(result[1])) == [":`Dog`", ["Dog"], "owner", ["String"], False]
+    assert (result.__len__()) == 2
+
+
+def test_node_type_properties_multiple_property_types():
+    cursor = connect().cursor()
+    execute_and_fetch_all(
+        cursor,
+        """
+        CREATE (n:Node {prop1: 1})
+        CREATE (m:Node {prop1: '1'})
+        """,
+    )
+    result = execute_and_fetch_all(
+        cursor,
+        f"CALL schema.node_type_properties() YIELD nodeType, nodeLabels, propertyName, propertyTypes , mandatory RETURN nodeType, nodeLabels, propertyName, propertyTypes , mandatory ORDER BY propertyName, nodeLabels[0];",
+    )
+    assert (list(result[0])) == [":`Node`", ["Node"], "prop1", ["Int", "String"], True] or (list(result[0])) == [
+        ":`Node`",
+        ["Node"],
+        "prop1",
+        ["String", "Int"],
+        True,
+    ]
+    assert (result.__len__()) == 1
 
 
 def test_rel_type_properties1():
@@ -467,10 +539,83 @@ def test_rel_type_properties1():
     result = list(
         execute_and_fetch_all(
             cursor,
-            f"CALL libschema.rel_type_properties() YIELD relType,propertyName, propertyTypes , mandatory RETURN relType, propertyName, propertyTypes , mandatory;",
+            f"CALL schema.rel_type_properties() YIELD relType,propertyName, propertyTypes , mandatory RETURN relType, propertyName, propertyTypes , mandatory;",
         )[0]
     )
-    assert (result) == [":`LOVES`", "", "", False]
+    assert (result) == [":`LOVES`", "", [], False]
+
+
+def test_rel_type_properties2():
+    cursor = connect().cursor()
+    execute_and_fetch_all(
+        cursor,
+        """
+        CREATE (d:Dog {name: 'Rex', owner: 'Carl'})-[l:LOVES]->(a:Activity {name: 'Running', location: 'Zadar'})
+        CREATE (n:Dog {name: 'Simba', owner: 'Lucy'})-[j:LOVES {duration: 30}]->(b:Activity {name: 'Running', location: 'Zadar'})
+        """,
+    )
+    result = execute_and_fetch_all(
+        cursor,
+        f"CALL schema.rel_type_properties() YIELD relType,propertyName, propertyTypes , mandatory RETURN relType, propertyName, propertyTypes , mandatory;",
+    )
+    assert (list(result[0])) == [":`LOVES`", "duration", ["Int"], False]
+    assert (result.__len__()) == 1
+
+
+def test_rel_type_properties3():
+    cursor = connect().cursor()
+    execute_and_fetch_all(
+        cursor,
+        """
+        CREATE (n:Dog {name: 'Simba', owner: 'Lucy'})-[j:LOVES {duration: 30}]->(b:Activity {name: 'Running', location: 'Zadar'})
+        """,
+    )
+    result = execute_and_fetch_all(
+        cursor,
+        f"CALL schema.rel_type_properties() YIELD relType,propertyName, propertyTypes , mandatory RETURN relType, propertyName, propertyTypes , mandatory;",
+    )
+    assert (list(result[0])) == [":`LOVES`", "duration", ["Int"], True]
+    assert (result.__len__()) == 1
+
+
+def test_rel_type_properties4():
+    cursor = connect().cursor()
+    execute_and_fetch_all(
+        cursor,
+        """
+        CREATE (n:Dog {name: 'Simba', owner: 'Lucy'})-[j:LOVES {duration: 30}]->(a:Activity {name: 'Running', location: 'Zadar'})
+        CREATE (m:Dog {name: 'Rex', owner: 'Lucy'})-[r:LOVES {duration: 30, weather: 'sunny'}]->(b:Activity {name: 'Running', location: 'Zadar'})
+        """,
+    )
+    result = execute_and_fetch_all(
+        cursor,
+        f"CALL schema.rel_type_properties() YIELD relType,propertyName, propertyTypes , mandatory RETURN relType, propertyName, propertyTypes , mandatory;",
+    )
+    assert (list(result[0])) == [":`LOVES`", "weather", ["String"], False]
+    assert (list(result[1])) == [":`LOVES`", "duration", ["Int"], True]
+    assert (result.__len__()) == 2
+
+
+def test_rel_type_properties_multiple_property_types():
+    cursor = connect().cursor()
+    execute_and_fetch_all(
+        cursor,
+        """
+        CREATE (n:Dog {name: 'Simba', owner: 'Lucy'})-[j:LOVES {duration: 30}]->(a:Activity {name: 'Running', location: 'Zadar'})
+        CREATE (m:Dog {name: 'Rex', owner: 'Lucy'})-[r:LOVES {duration: "30"}]->(b:Activity {name: 'Running', location: 'Zadar'})
+        """,
+    )
+    result = execute_and_fetch_all(
+        cursor,
+        f"CALL schema.rel_type_properties() YIELD relType,propertyName, propertyTypes , mandatory RETURN relType, propertyName, propertyTypes , mandatory;",
+    )
+    assert (list(result[0])) == [":`LOVES`", "duration", ["Int", "String"], True] or (list(result[0])) == [
+        ":`LOVES`",
+        "duration",
+        ["String", "Int"],
+        True,
+    ]
+    assert (result.__len__()) == 1
 
 
 if __name__ == "__main__":

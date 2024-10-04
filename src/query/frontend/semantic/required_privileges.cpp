@@ -1,4 +1,4 @@
-// Copyright 2023 Memgraph Ltd.
+// Copyright 2024 Memgraph Ltd.
 //
 // Use of this software is governed by the Business Source License
 // included in the file licenses/BSL.txt; by using this file, you agree to be bound by the terms of the Business Source
@@ -11,6 +11,7 @@
 
 #include "query/frontend/ast/ast.hpp"
 #include "query/frontend/ast/ast_visitor.hpp"
+#include "query/procedure/mg_procedure_impl.hpp"
 #include "query/procedure/module.hpp"
 #include "utils/memory.hpp"
 
@@ -27,6 +28,12 @@ class PrivilegeExtractor : public QueryVisitor<void>, public HierarchicalTreeVis
 
   void Visit(IndexQuery & /*unused*/) override { AddPrivilege(AuthQuery::Privilege::INDEX); }
 
+  void Visit(EdgeIndexQuery & /*unused*/) override { AddPrivilege(AuthQuery::Privilege::INDEX); }
+
+  void Visit(PointIndexQuery & /*unused*/) override { AddPrivilege(AuthQuery::Privilege::INDEX); }
+
+  void Visit(TextIndexQuery & /*unused*/) override { AddPrivilege(AuthQuery::Privilege::INDEX); }
+
   void Visit(AnalyzeGraphQuery & /*unused*/) override { AddPrivilege(AuthQuery::Privilege::INDEX); }
 
   void Visit(AuthQuery & /*unused*/) override { AddPrivilege(AuthQuery::Privilege::AUTH); }
@@ -38,6 +45,9 @@ class PrivilegeExtractor : public QueryVisitor<void>, public HierarchicalTreeVis
   void Visit(DatabaseInfoQuery &info_query) override {
     switch (info_query.info_type_) {
       case DatabaseInfoQuery::InfoType::INDEX:
+      // TODO: Reconsider priviliges, this 4 should have the same.
+      case DatabaseInfoQuery::InfoType::EDGE_TYPES:
+      case DatabaseInfoQuery::InfoType::NODE_LABELS:
         // TODO: This should be INDEX | STATS, but we don't have support for
         // *or* with privileges.
         AddPrivilege(AuthQuery::Privilege::INDEX);
@@ -47,6 +57,9 @@ class PrivilegeExtractor : public QueryVisitor<void>, public HierarchicalTreeVis
         // for *or* with privileges.
         AddPrivilege(AuthQuery::Privilege::CONSTRAINT);
         break;
+      case DatabaseInfoQuery::InfoType::METRICS:
+        AddPrivilege(AuthQuery::Privilege::STATS);
+        break;
     }
   }
 
@@ -54,6 +67,7 @@ class PrivilegeExtractor : public QueryVisitor<void>, public HierarchicalTreeVis
     switch (info_query.info_type_) {
       case SystemInfoQuery::InfoType::STORAGE:
       case SystemInfoQuery::InfoType::BUILD:
+      case SystemInfoQuery::InfoType::ACTIVE_USERS:
         AddPrivilege(AuthQuery::Privilege::STATS);
         break;
     }
@@ -94,6 +108,8 @@ class PrivilegeExtractor : public QueryVisitor<void>, public HierarchicalTreeVis
 
   void Visit(EdgeImportModeQuery & /*edge_import_mode_query*/) override {}
 
+  void Visit(DropGraphQuery & /*drop_graph_query*/) override {}
+
   void Visit(VersionQuery & /*version_query*/) override { AddPrivilege(AuthQuery::Privilege::STATS); }
 
   void Visit(MultiDatabaseQuery &query) override {
@@ -103,6 +119,7 @@ class PrivilegeExtractor : public QueryVisitor<void>, public HierarchicalTreeVis
         AddPrivilege(AuthQuery::Privilege::MULTI_DATABASE_EDIT);
         break;
       case MultiDatabaseQuery::Action::USE:
+      case MultiDatabaseQuery::Action::SHOW:
         AddPrivilege(AuthQuery::Privilege::MULTI_DATABASE_USE);
         break;
     }
@@ -112,13 +129,37 @@ class PrivilegeExtractor : public QueryVisitor<void>, public HierarchicalTreeVis
     AddPrivilege(AuthQuery::Privilege::MULTI_DATABASE_USE); /* OR EDIT */
   }
 
+  void Visit(CoordinatorQuery & /*coordinator_query*/) override { AddPrivilege(AuthQuery::Privilege::COORDINATOR); }
+
+  void Visit(CreateEnumQuery & /*enum_query*/) override { AddPrivilege(AuthQuery::Privilege::CREATE); }
+
+  void Visit(ShowEnumsQuery & /*enum_query*/) override { AddPrivilege(AuthQuery::Privilege::STATS); }
+
+  void Visit(AlterEnumAddValueQuery & /*enum_query*/) override { AddPrivilege(AuthQuery::Privilege::CREATE); }
+
+  void Visit(AlterEnumUpdateValueQuery & /*enum_query*/) override { AddPrivilege(AuthQuery::Privilege::CREATE); }
+
+  void Visit(TtlQuery & /*ttl_query*/) override {
+    AddPrivilege(AuthQuery::Privilege::CONFIG);
+    AddPrivilege(AuthQuery::Privilege::INDEX);
+    AddPrivilege(AuthQuery::Privilege::MATCH);
+    AddPrivilege(AuthQuery::Privilege::DELETE);
+  }
+
+  void Visit(AlterEnumRemoveValueQuery & /*enum_query*/) override { AddPrivilege(AuthQuery::Privilege::DELETE); }
+
+  void Visit(DropEnumQuery & /*enum_query*/) override { AddPrivilege(AuthQuery::Privilege::DELETE); }
+
+  void Visit(ShowSchemaInfoQuery & /*schema_info_query*/) override { AddPrivilege(AuthQuery::Privilege::STATS); }
+
+  void Visit(SessionTraceQuery & /*session_trace_query*/) override {}
+
   bool PreVisit(Create & /*unused*/) override {
     AddPrivilege(AuthQuery::Privilege::CREATE);
     return false;
   }
   bool PreVisit(CallProcedure &procedure) override {
-    const auto maybe_proc =
-        procedure::FindProcedure(procedure::gModuleRegistry, procedure.procedure_name_, utils::NewDeleteResource());
+    const auto maybe_proc = procedure::FindProcedure(procedure::gModuleRegistry, procedure.procedure_name_);
     if (maybe_proc && maybe_proc->second->info.required_privilege) {
       AddPrivilege(*maybe_proc->second->info.required_privilege);
     }
@@ -164,6 +205,7 @@ class PrivilegeExtractor : public QueryVisitor<void>, public HierarchicalTreeVis
   bool Visit(Identifier & /*unused*/) override { return true; }
   bool Visit(PrimitiveLiteral & /*unused*/) override { return true; }
   bool Visit(ParameterLookup & /*unused*/) override { return true; }
+  bool Visit(EnumValueAccess & /*unused*/) override { return true; }
 
  private:
   void AddPrivilege(AuthQuery::Privilege privilege) {

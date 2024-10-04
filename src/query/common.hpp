@@ -1,4 +1,4 @@
-// Copyright 2023 Memgraph Ltd.
+// Copyright 2024 Memgraph Ltd.
 //
 // Use of this software is governed by the Business Source License
 // included in the file licenses/BSL.txt; by using this file, you agree to be bound by the terms of the Business Source
@@ -17,11 +17,12 @@
 #include <string>
 #include <string_view>
 
-#include "query/db_accessor.hpp"
 #include "query/exceptions.hpp"
+#include "query/fmt.hpp"
 #include "query/frontend/ast/ast.hpp"
 #include "query/frontend/semantic/symbol.hpp"
 #include "query/typed_value.hpp"
+#include "range/v3/all.hpp"
 #include "storage/v2/id_types.hpp"
 #include "storage/v2/property_value.hpp"
 #include "storage/v2/result.hpp"
@@ -30,9 +31,104 @@
 
 namespace memgraph::query {
 
-namespace impl {
-bool TypedValueCompare(const TypedValue &a, const TypedValue &b);
-}  // namespace impl
+namespace {
+std::partial_ordering TypedValueCompare(TypedValue const &a, TypedValue const &b) {
+  // First assume typical same type comparisons
+  if (a.type() == b.type()) {
+    switch (a.type()) {
+      case TypedValue::Type::Bool:
+        return a.UnsafeValueBool() <=> b.UnsafeValueBool();
+      case TypedValue::Type::Int:
+        return a.UnsafeValueInt() <=> b.UnsafeValueInt();
+      case TypedValue::Type::Double:
+        return a.UnsafeValueDouble() <=> b.UnsafeValueDouble();
+      case TypedValue::Type::String:
+        return a.UnsafeValueString() <=> b.UnsafeValueString();
+      case TypedValue::Type::Date:
+        return a.UnsafeValueDate() <=> b.UnsafeValueDate();
+      case TypedValue::Type::LocalTime:
+        return a.UnsafeValueLocalTime() <=> b.UnsafeValueLocalTime();
+      case TypedValue::Type::LocalDateTime:
+        return a.UnsafeValueLocalDateTime() <=> b.UnsafeValueLocalDateTime();
+      case TypedValue::Type::ZonedDateTime:
+        return a.UnsafeValueZonedDateTime() <=> b.UnsafeValueZonedDateTime();
+      case TypedValue::Type::Duration:
+        return a.UnsafeValueDuration() <=> b.UnsafeValueDuration();
+      case TypedValue::Type::Null:
+        return std::partial_ordering::equivalent;
+      case TypedValue::Type::Enum:
+        return a.UnsafeValueEnum() <=> b.UnsafeValueEnum();
+      case TypedValue::Type::Point2d:
+        return a.UnsafeValuePoint2d() <=> b.UnsafeValuePoint2d();
+      case TypedValue::Type::Point3d:
+        return a.UnsafeValuePoint3d() <=> b.UnsafeValuePoint3d();
+        break;
+      case TypedValue::Type::List:
+      case TypedValue::Type::Map:
+      case TypedValue::Type::Vertex:
+      case TypedValue::Type::Edge:
+      case TypedValue::Type::Path:
+      case TypedValue::Type::Graph:
+      case TypedValue::Type::Function:
+        throw QueryRuntimeException("Comparison is not defined for values of type {}.", a.type());
+    }
+  } else {
+    // from this point legal only between values of
+    // int+float combinations or against null
+
+    // in ordering null comes after everything else
+    // at the same time Null is not less that null
+    // first deal with Null < Whatever case
+    if (a.IsNull()) return std::partial_ordering::greater;
+    // now deal with NotNull < Null case
+    if (b.IsNull()) return std::partial_ordering::less;
+
+    if (!(a.IsNumeric() && b.IsNumeric())) [[unlikely]]
+      throw QueryRuntimeException("Can't compare value of type {} to value of type {}.", a.type(), b.type());
+
+    switch (a.type()) {
+      case TypedValue::Type::Int:
+        return a.UnsafeValueInt() <=> b.ValueDouble();
+      case TypedValue::Type::Double:
+        return a.UnsafeValueDouble() <=> b.ValueInt();
+      case TypedValue::Type::Bool:
+      case TypedValue::Type::Null:
+      case TypedValue::Type::String:
+      case TypedValue::Type::List:
+      case TypedValue::Type::Map:
+      case TypedValue::Type::Vertex:
+      case TypedValue::Type::Edge:
+      case TypedValue::Type::Path:
+      case TypedValue::Type::Date:
+      case TypedValue::Type::LocalTime:
+      case TypedValue::Type::LocalDateTime:
+      case TypedValue::Type::ZonedDateTime:
+      case TypedValue::Type::Duration:
+      case TypedValue::Type::Enum:
+      case TypedValue::Type::Point2d:
+      case TypedValue::Type::Point3d:
+      case TypedValue::Type::Graph:
+      case TypedValue::Type::Function:
+        LOG_FATAL("Invalid type");
+    }
+  }
+}
+
+}  // namespace
+
+struct OrderedTypedValueCompare {
+  OrderedTypedValueCompare(Ordering ordering) : ordering_{ordering}, ascending{ordering == Ordering::ASC} {}
+
+  auto operator()(const TypedValue &lhs, const TypedValue &rhs) const -> std::partial_ordering {
+    return ascending ? TypedValueCompare(lhs, rhs) : TypedValueCompare(rhs, lhs);
+  }
+
+  auto ordering() const { return ordering_; }
+
+ private:
+  Ordering ordering_;
+  bool ascending = true;
+};
 
 /// Custom Comparator type for comparing vectors of TypedValues.
 ///
@@ -42,38 +138,34 @@ bool TypedValueCompare(const TypedValue &a, const TypedValue &b);
 class TypedValueVectorCompare final {
  public:
   TypedValueVectorCompare() = default;
-  explicit TypedValueVectorCompare(const std::vector<Ordering> &ordering) : ordering_(ordering) {}
+  explicit TypedValueVectorCompare(std::vector<OrderedTypedValueCompare> orderings)
+      : orderings_{std::move(orderings)} {}
 
-  template <class TAllocator>
-  bool operator()(const std::vector<TypedValue, TAllocator> &c1, const std::vector<TypedValue, TAllocator> &c2) const {
-    // ordering is invalid if there are more elements in the collections
-    // then there are in the ordering_ vector
-    MG_ASSERT(c1.size() <= ordering_.size() && c2.size() <= ordering_.size(),
-              "Collections contain more elements then there are orderings");
+  const auto &orderings() const { return orderings_; }
 
-    auto c1_it = c1.begin();
-    auto c2_it = c2.begin();
-    auto ordering_it = ordering_.begin();
-    for (; c1_it != c1.end() && c2_it != c2.end(); c1_it++, c2_it++, ordering_it++) {
-      if (impl::TypedValueCompare(*c1_it, *c2_it)) return *ordering_it == Ordering::ASC;
-      if (impl::TypedValueCompare(*c2_it, *c1_it)) return *ordering_it == Ordering::DESC;
-    }
-
-    // at least one collection is exhausted
-    // c1 is less then c2 iff c1 reached the end but c2 didn't
-    return (c1_it == c1.end()) && (c2_it != c2.end());
+  auto lex_cmp() const {
+    return [orderings = &orderings_]<typename TAllocator>(const std::vector<TypedValue, TAllocator> &lhs,
+                                                          const std::vector<TypedValue, TAllocator> &rhs) {
+      auto rng = ranges::views::zip(*orderings, lhs, rhs);
+      for (auto const &[cmp, l, r] : rng) {
+        auto res = cmp(l, r);
+        if (res == std::partial_ordering::less) return true;
+        if (res == std::partial_ordering::greater) return false;
+      }
+      DMG_ASSERT(orderings->size() == lhs.size() && lhs.size() == rhs.size());
+      return false;
+    };
   }
 
-  // TODO: Remove this, member is public
-  const auto &ordering() const { return ordering_; }
-
-  std::vector<Ordering> ordering_;
+ private:
+  std::vector<OrderedTypedValueCompare> orderings_;
 };
 
 /// Raise QueryRuntimeException if the value for symbol isn't of expected type.
 inline void ExpectType(const Symbol &symbol, const TypedValue &value, TypedValue::Type expected) {
-  if (value.type() != expected)
+  if (value.type() != expected) [[unlikely]] {
     throw QueryRuntimeException("Expected a {} for '{}', but got {}.", expected, symbol.name(), value.type());
+  }
 }
 
 inline void ProcessError(const storage::Error error) {

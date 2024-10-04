@@ -1,4 +1,4 @@
-// Copyright 2023 Memgraph Ltd.
+// Copyright 2024 Memgraph Ltd.
 //
 // Use of this software is governed by the Business Source License
 // included in the file licenses/BSL.txt; by using this file, you agree to be bound by the terms of the Business Source
@@ -12,6 +12,7 @@
 /// TODO: clear dependencies
 
 #include "storage/v2/disk/label_property_index.hpp"
+#include "storage/v2/transaction.hpp"
 #include "utils/disk_utils.hpp"
 #include "utils/rocksdb_serialization.hpp"
 

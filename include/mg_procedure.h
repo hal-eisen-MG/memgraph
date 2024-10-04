@@ -1,4 +1,4 @@
-// Copyright 2023 Memgraph Ltd.
+// Copyright 2024 Memgraph Ltd.
 //
 // Use of this software is governed by the Business Source License
 // included in the file licenses/BSL.txt; by using this file, you agree to be bound by the terms of the Business Source
@@ -429,6 +429,9 @@ enum mgp_error mgp_list_copy(struct mgp_list *list, struct mgp_memory *memory, s
 /// Free the memory used by the given mgp_list and contained elements.
 void mgp_list_destroy(struct mgp_list *list);
 
+/// Return whether the given mgp_list contains any deleted values.
+enum mgp_error mgp_list_contains_deleted(struct mgp_list *list, int *result);
+
 /// Append a copy of mgp_value to mgp_list if capacity allows.
 /// The list copies the given value and therefore does not take ownership of the
 /// original value. You still need to call mgp_value_destroy to free the
@@ -468,6 +471,9 @@ enum mgp_error mgp_map_copy(struct mgp_map *map, struct mgp_memory *memory, stru
 
 /// Free the memory used by the given mgp_map and contained items.
 void mgp_map_destroy(struct mgp_map *map);
+
+/// Return whether the given mgp_map contains any deleted values.
+enum mgp_error mgp_map_contains_deleted(struct mgp_map *map, int *result);
 
 /// Insert a new mapping from a NULL terminated character string to a value.
 /// If a mapping with the same key already exists, it is *not* replaced.
@@ -551,6 +557,9 @@ enum mgp_error mgp_path_copy(struct mgp_path *path, struct mgp_memory *memory, s
 
 /// Free the memory used by the given mgp_path and contained vertices and edges.
 void mgp_path_destroy(struct mgp_path *path);
+
+/// Return whether the given mgp_path contains any deleted values.
+enum mgp_error mgp_path_contains_deleted(struct mgp_path *path, int *result);
 
 /// Append an edge continuing from the last vertex on the path.
 /// The edge is copied into the path. Therefore, the path does not take
@@ -725,6 +734,9 @@ enum mgp_error mgp_vertex_copy(struct mgp_vertex *v, struct mgp_memory *memory, 
 /// Free the memory used by a mgp_vertex.
 void mgp_vertex_destroy(struct mgp_vertex *v);
 
+/// Return whether the given mgp_vertex is deleted.
+enum mgp_error mgp_vertex_is_deleted(struct mgp_vertex *v, int *result);
+
 /// Result is non-zero if given vertices are equal, otherwise 0.
 enum mgp_error mgp_vertex_equal(struct mgp_vertex *v1, struct mgp_vertex *v2, int *result);
 
@@ -819,6 +831,9 @@ enum mgp_error mgp_edge_copy(struct mgp_edge *e, struct mgp_memory *memory, stru
 /// Free the memory used by a mgp_edge.
 void mgp_edge_destroy(struct mgp_edge *e);
 
+/// Return whether the given mgp_edge is deleted.
+enum mgp_error mgp_edge_is_deleted(struct mgp_edge *e, int *result);
+
 /// Result is non-zero if given edges are equal, otherwise 0.
 enum mgp_error mgp_edge_equal(struct mgp_edge *e1, struct mgp_edge *e2, int *result);
 
@@ -875,6 +890,36 @@ enum mgp_error mgp_edge_iter_properties(struct mgp_edge *e, struct mgp_memory *m
 /// Return mgp_error::MGP_ERROR_UNABLE_TO_ALLOCATE if unable to allocate the vertex.
 enum mgp_error mgp_graph_get_vertex_by_id(struct mgp_graph *g, struct mgp_vertex_id id, struct mgp_memory *memory,
                                           struct mgp_vertex **result);
+
+/// Result is non-zero if the index with the given name exists.
+/// The current implementation always returns without errors.
+enum mgp_error mgp_graph_has_text_index(struct mgp_graph *graph, const char *index_name, int *result);
+
+/// Available modes of searching text indices.
+MGP_ENUM_CLASS text_search_mode{
+    SPECIFIED_PROPERTIES,
+    REGEX,
+    ALL_PROPERTIES,
+};
+
+/// Search the named text index for the given query. The result is a map with the "search_results" and "error_msg" keys.
+/// The "search_results" key contains the vertices whose text-indexed properties match the given query.
+/// In case of a Tantivy error, the "search_results" key is absent, and "error_msg" contains the error message.
+/// Return mgp_error::MGP_ERROR_UNABLE_TO_ALLOCATE if there’s an allocation error while constructing the results map.
+/// Return mgp_error::MGP_ERROR_KEY_ALREADY_EXISTS if the same key is being created in the results map more than once.
+enum mgp_error mgp_graph_search_text_index(struct mgp_graph *graph, const char *index_name, const char *search_query,
+                                           enum text_search_mode search_mode, struct mgp_memory *memory,
+                                           struct mgp_map **result);
+
+/// Aggregate over the results of a search over the named text index. The result is a map with the "aggregation_results"
+/// and "error_msg" keys.
+/// The "aggregation_results" key contains the vertices whose text-indexed properties match the given query.
+/// In case of a Tantivy error, the "aggregation_results" key is absent, and "error_msg" contains the error message.
+/// Return mgp_error::MGP_ERROR_UNABLE_TO_ALLOCATE if there’s an allocation error while constructing the results map.
+/// Return mgp_error::MGP_ERROR_KEY_ALREADY_EXISTS if the same key is being created in the results map more than once.
+enum mgp_error mgp_graph_aggregate_over_text_index(struct mgp_graph *graph, const char *index_name,
+                                                   const char *search_query, const char *aggregation_query,
+                                                   struct mgp_memory *memory, struct mgp_map **result);
 
 /// Creates label index for given label.
 /// mgp_error::MGP_ERROR_NO_ERROR is always returned.
@@ -940,6 +985,12 @@ enum mgp_error mgp_list_all_unique_constraints(struct mgp_graph *graph, struct m
 /// immutable also. The same applies for edges.
 /// Current implementation always returns without errors.
 enum mgp_error mgp_graph_is_mutable(struct mgp_graph *graph, int *result);
+
+/// Result is non-zero if the graph is in transactional storage mode.
+/// If a graph is not in transactional mode (i.e. analytical mode), then vertices and edges can be missing
+/// because changes from other transactions are visible.
+/// Current implementation always returns without errors.
+enum mgp_error mgp_graph_is_transactional(struct mgp_graph *graph, int *result);
 
 /// Add a new vertex to the graph.
 /// Resulting vertex must be freed using mgp_vertex_destroy.
@@ -1779,6 +1830,26 @@ enum mgp_error mgp_func_result_set_error_msg(struct mgp_func_result *result, con
 /// mgp_func_result.
 enum mgp_error mgp_func_result_set_value(struct mgp_func_result *result, struct mgp_value *value,
                                          struct mgp_memory *memory);
+
+struct mgp_execution_headers;
+
+enum mgp_error mgp_execution_headers_at(struct mgp_execution_headers *headers, size_t index, const char **result);
+
+enum mgp_error mgp_execution_headers_size(struct mgp_execution_headers *headers, size_t *result);
+
+struct mgp_execution_result;
+
+enum mgp_error mgp_execute_query(struct mgp_graph *graph, struct mgp_memory *memory, const char *query,
+                                 struct mgp_map *params, struct mgp_execution_result **result);
+
+enum mgp_error mgp_fetch_execution_headers(struct mgp_execution_result *exec_result,
+                                           struct mgp_execution_headers **result);
+
+enum mgp_error mgp_pull_one(struct mgp_execution_result *exec_result, struct mgp_graph *graph,
+                            struct mgp_memory *memory, struct mgp_map **result);
+
+void mgp_execution_result_destroy(struct mgp_execution_result *exec_result);
+
 /// @}
 
 #ifdef __cplusplus

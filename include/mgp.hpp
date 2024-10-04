@@ -1,4 +1,4 @@
-// Copyright 2023 Memgraph Ltd.
+// Copyright 2024 Memgraph Ltd.
 //
 // Use of this software is governed by the Business Source License
 // included in the file licenses/BSL.txt; by using this file, you agree to be bound by the terms of the Business Source
@@ -16,6 +16,7 @@
 #include <functional>
 #include <map>
 #include <mutex>
+#include <optional>
 #include <set>
 #include <shared_mutex>
 #include <string>
@@ -31,6 +32,15 @@
 #include "mg_procedure.h"
 
 namespace mgp {
+
+class TextSearchException : public std::exception {
+ public:
+  explicit TextSearchException(std::string message) : message_(std::move(message)) {}
+  const char *what() const noexcept override { return message_.c_str(); }
+
+ private:
+  std::string message_;
+};
 
 class IndexException : public std::exception {
  public:
@@ -93,54 +103,30 @@ class Relationship;
 struct MapItem;
 class Duration;
 class Value;
+class QueryExecution;
+class ExecutionResult;
+class ExecutionHeaders;
+class ExecutionRow;
 
 struct StealType {};
 inline constexpr StealType steal{};
 
-class MemoryDispatcher final {
- public:
-  MemoryDispatcher() = default;
-  ~MemoryDispatcher() = default;
-  MemoryDispatcher(const MemoryDispatcher &) = delete;
-  MemoryDispatcher(MemoryDispatcher &&) = delete;
-  MemoryDispatcher &operator=(const MemoryDispatcher &) = delete;
-  MemoryDispatcher &operator=(MemoryDispatcher &&) = delete;
+namespace MemoryDispatcher {
 
-  mgp_memory *GetMemoryResource() noexcept {
-    const auto this_id = std::this_thread::get_id();
-    std::shared_lock lock(mut_);
-    return map_[this_id];
-  }
+extern thread_local std::optional<mgp_memory *> current_memory __attribute__((visibility("default")));
 
-  void Register(mgp_memory *mem) noexcept {
-    const auto this_id = std::this_thread::get_id();
-    std::unique_lock lock(mut_);
-    map_[this_id] = mem;
-  }
+inline mgp_memory *GetMemoryResource() noexcept { return current_memory.value_or(nullptr); }
 
-  void UnRegister() noexcept {
-    const auto this_id = std::this_thread::get_id();
-    std::unique_lock lock(mut_);
-    map_.erase(this_id);
-  }
+inline void Register(mgp_memory *mem) noexcept { current_memory = mem; }
 
-  bool IsThisThreadRegistered() noexcept {
-    const auto this_id = std::this_thread::get_id();
-    std::shared_lock lock(mut_);
-    return map_.contains(this_id);
-  }
+inline void UnRegister() noexcept { current_memory.reset(); }
 
- private:
-  std::unordered_map<std::thread::id, mgp_memory *> map_;
-  std::shared_mutex mut_;
-};
+inline bool IsThisThreadRegistered() noexcept { return current_memory.has_value(); }
+};  // namespace MemoryDispatcher
 
-// The use of this object, with the help of MemoryDispatcherGuard
-// should be the prefered way to pass the memory pointer to this
-// header. The use of the 'mgp_memory *memory' pointer is deprecated
-// and will be removed in upcoming releases.
-// NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
-inline MemoryDispatcher mrd{};
+// The use of MemoryDispatcherGuard should be the prefered way to pass
+// the memory pointer to this header. The use of the 'mgp_memory *memory'
+// pointer is deprecated and will be removed in upcoming releases.
 
 // TODO - Once we deprecate this we should remove this
 // and make sure nothing relies on it anymore. This alone
@@ -149,14 +135,14 @@ inline mgp_memory *memory{nullptr};
 
 class MemoryDispatcherGuard final {
  public:
-  explicit MemoryDispatcherGuard(mgp_memory *mem) { mrd.Register(mem); };
+  explicit MemoryDispatcherGuard(mgp_memory *mem) { MemoryDispatcher::Register(mem); };
 
   MemoryDispatcherGuard(const MemoryDispatcherGuard &) = delete;
   MemoryDispatcherGuard(MemoryDispatcherGuard &&) = delete;
   MemoryDispatcherGuard &operator=(const MemoryDispatcherGuard &) = delete;
   MemoryDispatcherGuard &operator=(MemoryDispatcherGuard &&) = delete;
 
-  ~MemoryDispatcherGuard() { mrd.UnRegister(); }
+  ~MemoryDispatcherGuard() { MemoryDispatcher::UnRegister(); }
 };
 
 // Currently we want to preserve both ways(using mgp::memory and
@@ -168,10 +154,10 @@ class MemoryDispatcherGuard final {
 // the mapping instead.
 template <typename Func, typename... Args>
 inline decltype(auto) MemHandlerCallback(Func &&func, Args &&...args) {
-  if (!mrd.IsThisThreadRegistered()) {
+  if (!MemoryDispatcher::IsThisThreadRegistered()) {
     return std::forward<Func>(func)(std::forward<Args>(args)..., memory);
   }
-  return std::forward<Func>(func)(std::forward<Args>(args)..., mrd.GetMemoryResource());
+  return std::forward<Func>(func)(std::forward<Args>(args)..., MemoryDispatcher::GetMemoryResource());
 }
 
 /* #region Graph (Id, Graph, Nodes, GraphRelationships, Relationships & Labels) */
@@ -246,6 +232,8 @@ class Graph {
 
   /// @brief Returns whether the graph is mutable.
   bool IsMutable() const;
+  /// @brief Returns whether the graph is in a transactional storage mode.
+  bool IsTransactional() const;
   /// @brief Creates a node and adds it to the graph.
   Node CreateNode();
   /// @brief Deletes a node from the graph.
@@ -512,6 +500,9 @@ class List {
 
   ~List();
 
+  /// @brief Returns wheter the list contains any deleted values.
+  bool ContainsDeleted() const;
+
   /// @brief Returns the size of the list.
   size_t Size() const;
   /// @brief Returns whether the list is empty.
@@ -590,6 +581,7 @@ class Map {
   friend class Record;
   friend class Result;
   friend class Parameter;
+  friend class QueryExecution;
 
  public:
   /// @brief Creates a Map from the copy of the given @ref mgp_map.
@@ -617,6 +609,9 @@ class Map {
   Map &operator=(Map &&other) noexcept;
 
   ~Map();
+
+  /// @brief Returns wheter the map contains any deleted values.
+  bool ContainsDeleted() const;
 
   /// @brief Returns the size of the map.
   size_t Size() const;
@@ -730,6 +725,9 @@ class Node {
 
   ~Node();
 
+  /// @brief Returns wheter the node has been deleted.
+  bool IsDeleted() const;
+
   /// @brief Returns the node’s ID.
   mgp::Id Id() const;
 
@@ -811,6 +809,9 @@ class Relationship {
 
   ~Relationship();
 
+  /// @brief Returns wheter the relationship has been deleted.
+  bool IsDeleted() const;
+
   /// @brief Returns the relationship’s ID.
   mgp::Id Id() const;
 
@@ -875,6 +876,9 @@ class Path {
   Path &operator=(Path &&other) noexcept;
 
   ~Path();
+
+  /// @brief Returns wheter the path contains any deleted values.
+  bool ContainsDeleted() const;
 
   /// Returns the path length (number of relationships).
   size_t Length() const;
@@ -1533,6 +1537,97 @@ class Return {
   mgp_type *GetMGPType() const;
 };
 
+class ExecutionHeaders {
+ public:
+  ExecutionHeaders(mgp_execution_headers *headers);
+  size_t Size() const;
+  std::string At(size_t index) const;
+
+  std::string_view operator[](size_t index) const;
+
+  class Iterator {
+   private:
+    friend class ExecutionHeaders;
+
+   public:
+    using value_type = ExecutionHeaders;
+    using difference_type = std::ptrdiff_t;
+    using pointer = const ExecutionHeaders *;
+    using reference = const ExecutionHeaders &;
+    using iterator_category = std::forward_iterator_tag;
+
+    bool operator==(const Iterator &other) const;
+
+    bool operator!=(const Iterator &other) const;
+
+    Iterator &operator++();
+
+    std::string_view operator*() const;
+
+   private:
+    Iterator(const ExecutionHeaders *iterable, size_t index);
+
+    const ExecutionHeaders *iterable_;
+    size_t index_;
+  };
+
+  Iterator begin();
+  Iterator end();
+
+  Iterator cbegin();
+  Iterator cend();
+
+ private:
+  mgp_execution_headers *headers_;
+};
+
+class QueryExecution {
+ public:
+  QueryExecution(mgp_graph *graph);
+  ExecutionResult ExecuteQuery(std::string_view query, Map params = Map()) const;
+  ExecutionResult ExecuteQuery(std::string query, Map params = Map()) const;
+
+ private:
+  mgp_graph *graph_;
+};
+
+class ExecutionRow {
+ private:
+  Map row_;
+
+ public:
+  ExecutionRow(mgp_map *row);
+
+  /// @brief Returns the size of the map.
+  size_t Size() const;
+
+  /// @brief Returns whether the map is empty.
+  bool Empty() const;
+
+  /// @brief Returns the value at the given `key`.
+  Value operator[](std::string_view key) const;
+
+  /// @brief Returns the value at the given `key`.
+  Value At(std::string_view key) const;
+
+  /// @brief Returns true if the given `key` exists.
+  bool KeyExists(std::string_view key) const;
+
+  mgp::Map Values() const;
+};
+
+class ExecutionResult {
+ public:
+  ExecutionResult(mgp_execution_result *result, mgp_graph *graph);
+  ~ExecutionResult();
+  ExecutionHeaders Headers() const;
+  std::optional<ExecutionRow> PullOne() const;
+
+ private:
+  mgp_execution_result *result_;
+  mgp_graph *graph_;
+};
+
 enum class ProcedureType : uint8_t {
   Read,
   Write,
@@ -1995,6 +2090,8 @@ inline bool Graph::ContainsRelationship(const Relationship &relationship) const 
 
 inline bool Graph::IsMutable() const { return mgp::graph_is_mutable(graph_); }
 
+inline bool Graph::IsTransactional() const { return mgp::graph_is_transactional(graph_); }
+
 inline Node Graph::CreateNode() {
   auto *vertex = mgp::MemHandlerCallback(graph_create_vertex, graph_);
   auto node = Node(vertex);
@@ -2442,6 +2539,8 @@ inline List::~List() {
   }
 }
 
+inline bool List::ContainsDeleted() const { return mgp::list_contains_deleted(ptr_); }
+
 inline size_t List::Size() const { return mgp::list_size(ptr_); }
 
 inline bool List::Empty() const { return Size() == 0; }
@@ -2567,6 +2666,8 @@ inline Map::~Map() {
     mgp::map_destroy(ptr_);
   }
 }
+
+inline bool Map::ContainsDeleted() const { return mgp::map_contains_deleted(ptr_); }
 
 inline size_t Map::Size() const { return mgp::map_size(ptr_); }
 
@@ -2733,6 +2834,8 @@ inline Node::~Node() {
   }
 }
 
+inline bool Node::IsDeleted() const { return mgp::vertex_is_deleted(ptr_); }
+
 inline mgp::Id Node::Id() const { return Id::FromInt(mgp::vertex_get_id(ptr_).as_int); }
 
 inline mgp::Labels Node::Labels() const { return mgp::Labels(ptr_); }
@@ -2884,6 +2987,8 @@ inline Relationship::~Relationship() {
   }
 }
 
+inline bool Relationship::IsDeleted() const { return mgp::edge_is_deleted(ptr_); }
+
 inline mgp::Id Relationship::Id() const { return Id::FromInt(mgp::edge_get_id(ptr_).as_int); }
 
 inline std::string_view Relationship::Type() const { return mgp::edge_get_type(ptr_).name; }
@@ -2988,6 +3093,8 @@ inline Path::~Path() {
     mgp::path_destroy(ptr_);
   }
 }
+
+inline bool Path::ContainsDeleted() const { return mgp::path_contains_deleted(ptr_); }
 
 inline size_t Path::Length() const { return mgp::path_size(ptr_); }
 
@@ -4257,6 +4364,82 @@ inline mgp_type *Return::GetMGPType() const {
   return util::ToMGPType(type_);
 }
 
+inline ExecutionHeaders::ExecutionHeaders(mgp_execution_headers *headers) : headers_(headers) {}
+
+inline size_t ExecutionHeaders::Size() const { return mgp::execution_headers_size(headers_); }
+
+inline std::string ExecutionHeaders::At(size_t index) const {
+  return std::string(mgp::execution_headers_at(headers_, index));
+}
+
+inline QueryExecution::QueryExecution(mgp_graph *graph) : graph_(graph) {}
+
+inline ExecutionResult QueryExecution::ExecuteQuery(std::string_view query, mgp::Map params) const {
+  return ExecuteQuery(std::string(query), params);
+}
+
+inline ExecutionResult QueryExecution::ExecuteQuery(std::string query, mgp::Map params) const {
+  return ExecutionResult(mgp::MemHandlerCallback(execute_query, graph_, query.data(), params.ptr_), graph_);
+}
+
+inline ExecutionResult::ExecutionResult(mgp_execution_result *result, mgp_graph *graph)
+    : result_(result), graph_(graph) {}
+
+inline ExecutionResult::~ExecutionResult() { mgp::execution_result_destroy(result_); }
+
+inline ExecutionHeaders ExecutionResult::Headers() const { return mgp::fetch_execution_headers(result_); };
+
+inline std::optional<ExecutionRow> ExecutionResult::PullOne() const {
+  auto *value = mgp::MemHandlerCallback(pull_one, result_, graph_);
+  if (!value) {
+    return std::nullopt;
+  }
+
+  return ExecutionRow(value);
+}
+
+inline bool ExecutionHeaders::Iterator::operator==(const Iterator &other) const {
+  return iterable_ == other.iterable_ && index_ == other.index_;
+}
+
+inline bool ExecutionHeaders::Iterator::operator!=(const Iterator &other) const { return !(*this == other); }
+
+inline ExecutionHeaders::Iterator &ExecutionHeaders::Iterator::operator++() {
+  index_++;
+  return *this;
+}
+
+inline std::string_view ExecutionHeaders::Iterator::operator*() const { return (*iterable_)[index_]; }
+
+inline ExecutionHeaders::Iterator::Iterator(const ExecutionHeaders *iterable, size_t index)
+    : iterable_(iterable), index_(index) {}
+
+inline std::string_view ExecutionHeaders::operator[](size_t index) const {
+  return std::string_view(mgp::execution_headers_at(headers_, index));
+}
+
+inline ExecutionHeaders::Iterator ExecutionHeaders::begin() { return Iterator(this, 0); }
+
+inline ExecutionHeaders::Iterator ExecutionHeaders::end() { return Iterator(this, Size()); }
+
+inline ExecutionHeaders::Iterator ExecutionHeaders::cbegin() { return Iterator(this, 0); }
+
+inline ExecutionHeaders::Iterator ExecutionHeaders::cend() { return Iterator(this, Size()); }
+
+inline ExecutionRow::ExecutionRow(mgp_map *row) : row_(row) {}
+
+inline size_t ExecutionRow::Size() const { return row_.Size(); }
+
+inline bool ExecutionRow::Empty() const { return row_.Empty(); }
+
+inline Value ExecutionRow::operator[](std::string_view key) const { return row_[key]; }
+
+inline Value ExecutionRow::At(std::string_view key) const { return row_.At(key); }
+
+inline bool ExecutionRow::KeyExists(std::string_view key) const { return row_.KeyExists(key); }
+
+inline mgp::Map ExecutionRow::Values() const { return mgp::Map(row_); }
+
 // do not enter
 namespace detail {
 inline void AddParamsReturnsToProc(mgp_proc *proc, std::vector<Parameter> &parameters,
@@ -4277,12 +4460,12 @@ inline void AddParamsReturnsToProc(mgp_proc *proc, std::vector<Parameter> &param
 }
 }  // namespace detail
 
-inline bool CreateLabelIndex(mgp_graph *memgaph_graph, const std::string_view label) {
-  return create_label_index(memgaph_graph, label.data());
+inline bool CreateLabelIndex(mgp_graph *memgraph_graph, const std::string_view label) {
+  return create_label_index(memgraph_graph, label.data());
 }
 
-inline bool DropLabelIndex(mgp_graph *memgaph_graph, const std::string_view label) {
-  return drop_label_index(memgaph_graph, label.data());
+inline bool DropLabelIndex(mgp_graph *memgraph_graph, const std::string_view label) {
+  return drop_label_index(memgraph_graph, label.data());
 }
 
 inline List ListAllLabelIndices(mgp_graph *memgraph_graph) {
@@ -4293,14 +4476,14 @@ inline List ListAllLabelIndices(mgp_graph *memgraph_graph) {
   return List(label_indices);
 }
 
-inline bool CreateLabelPropertyIndex(mgp_graph *memgaph_graph, const std::string_view label,
+inline bool CreateLabelPropertyIndex(mgp_graph *memgraph_graph, const std::string_view label,
                                      const std::string_view property) {
-  return create_label_property_index(memgaph_graph, label.data(), property.data());
+  return create_label_property_index(memgraph_graph, label.data(), property.data());
 }
 
-inline bool DropLabelPropertyIndex(mgp_graph *memgaph_graph, const std::string_view label,
+inline bool DropLabelPropertyIndex(mgp_graph *memgraph_graph, const std::string_view label,
                                    const std::string_view property) {
-  return drop_label_property_index(memgaph_graph, label.data(), property.data());
+  return drop_label_property_index(memgraph_graph, label.data(), property.data());
 }
 
 inline List ListAllLabelPropertyIndices(mgp_graph *memgraph_graph) {
@@ -4309,6 +4492,58 @@ inline List ListAllLabelPropertyIndices(mgp_graph *memgraph_graph) {
     throw ValueException("Couldn't list all label+property indices");
   }
   return List(label_property_indices);
+}
+
+namespace {
+constexpr std::string_view kErrorMsgKey = "error_msg";
+constexpr std::string_view kSearchResultsKey = "search_results";
+constexpr std::string_view kAggregationResultsKey = "aggregation_results";
+}  // namespace
+
+inline List SearchTextIndex(mgp_graph *memgraph_graph, std::string_view index_name, std::string_view search_query,
+                            text_search_mode search_mode) {
+  auto results_or_error = Map(mgp::MemHandlerCallback(graph_search_text_index, memgraph_graph, index_name.data(),
+                                                      search_query.data(), search_mode));
+  if (results_or_error.KeyExists(kErrorMsgKey)) {
+    if (!results_or_error.At(kErrorMsgKey).IsString()) {
+      throw TextSearchException{"The error message is not a string!"};
+    }
+    throw TextSearchException(results_or_error.At(kErrorMsgKey).ValueString().data());
+  }
+
+  if (!results_or_error.KeyExists(kSearchResultsKey)) {
+    throw TextSearchException{"Incomplete text index search results!"};
+  }
+
+  if (!results_or_error.At(kSearchResultsKey).IsList()) {
+    throw TextSearchException{"Text index search results have wrong type!"};
+  }
+
+  return results_or_error.At(kSearchResultsKey).ValueList();
+}
+
+inline std::string_view AggregateOverTextIndex(mgp_graph *memgraph_graph, std::string_view index_name,
+                                               std::string_view search_query, std::string_view aggregation_query) {
+  auto results_or_error =
+      Map(mgp::MemHandlerCallback(graph_aggregate_over_text_index, memgraph_graph, index_name.data(),
+                                  search_query.data(), aggregation_query.data()));
+
+  if (results_or_error.KeyExists(kErrorMsgKey)) {
+    if (!results_or_error.At(kErrorMsgKey).IsString()) {
+      throw TextSearchException{"The error message is not a string!"};
+    }
+    throw TextSearchException(results_or_error.At(kErrorMsgKey).ValueString().data());
+  }
+
+  if (!results_or_error.KeyExists(kAggregationResultsKey)) {
+    throw TextSearchException{"Incomplete text index aggregation results!"};
+  }
+
+  if (!results_or_error.At(kAggregationResultsKey).IsString()) {
+    throw TextSearchException{"Text index aggregation results have wrong type!"};
+  }
+
+  return results_or_error.At(kAggregationResultsKey).ValueString();
 }
 
 inline bool CreateExistenceConstraint(mgp_graph *memgraph_graph, const std::string_view label,

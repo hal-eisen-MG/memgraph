@@ -1,4 +1,4 @@
-// Copyright 2023 Memgraph Ltd.
+// Copyright 2024 Memgraph Ltd.
 //
 // Use of this software is governed by the Business Source License
 // included in the file licenses/BSL.txt; by using this file, you agree to be bound by the terms of the Business Source
@@ -41,13 +41,29 @@ class Scheduler {
    */
   template <typename TRep, typename TPeriod>
   void Run(const std::string &service_name, const std::chrono::duration<TRep, TPeriod> &pause,
-           const std::function<void()> &f) {
+           const std::function<void()> &f, std::optional<std::chrono::system_clock::time_point> start_time = {}) {
     DMG_ASSERT(is_working_ == false, "Thread already running.");
     DMG_ASSERT(pause > std::chrono::seconds(0), "Pause is invalid.");
 
     is_working_ = true;
-    thread_ = std::thread([this, pause, f, service_name]() {
-      auto start_time = std::chrono::system_clock::now();
+    thread_ = std::thread([this, pause, f, service_name, start_time]() mutable {
+      auto find_first_execution = [&]() {
+        if (start_time) {              // Custom start time; execute as soon as possible
+          return *start_time - pause;  // -= simplifies the logic later on
+        }
+        return std::chrono::system_clock::now();
+      };
+
+      auto find_next_execution = [&](auto now) {
+        if (start_time) {                                  // Custom start time
+          while (*start_time < now) *start_time += pause;  // Find first start in the future
+          *start_time -= pause;                            // -= simplifies the logic later on
+          return *start_time;
+        }
+        return now;
+      };
+
+      auto next_execution = find_first_execution();
 
       utils::ThreadSetName(service_name);
 
@@ -57,15 +73,18 @@ class Scheduler {
         // program and there is probably no work to do in scheduled function at
         // the start of the program. Since Server will log some messages on
         // the program start we let him log first and we make sure by first
-        // waiting that funcion f will not log before it.
-        std::unique_lock<std::mutex> lk(mutex_);
+        // waiting that function f will not log before it.
+        // Check for pause also.
+        auto lk = std::unique_lock{mutex_};
         auto now = std::chrono::system_clock::now();
-        start_time += pause;
-        if (start_time > now) {
-          condition_variable_.wait_until(lk, start_time, [&] { return is_working_.load() == false; });
+        next_execution += pause;
+        if (next_execution > now) {
+          condition_variable_.wait_until(lk, next_execution, [&] { return !is_working_.load(); });
         } else {
-          start_time = now;
+          next_execution = find_next_execution(now);  // Compensate for time drift when using a start time
         }
+
+        pause_cv_.wait(lk, [&] { return !is_paused_.load(); });
 
         if (!is_working_) break;
         f();
@@ -73,13 +92,22 @@ class Scheduler {
     });
   }
 
+  void Resume() {
+    is_paused_.store(false);
+    pause_cv_.notify_one();
+  }
+
+  void Pause() { is_paused_.store(true); }
+
   /**
    * @brief Stops the thread execution. This is a blocking call and may take as
    * much time as one call to the function given previously to Run takes.
    * @throw std::system_error
    */
   void Stop() {
+    is_paused_.store(false);
     is_working_.store(false);
+    pause_cv_.notify_one();
     condition_variable_.notify_one();
     if (thread_.joinable()) thread_.join();
   }
@@ -96,6 +124,16 @@ class Scheduler {
    * Variable is true when thread is running.
    */
   std::atomic<bool> is_working_{false};
+
+  /**
+   * Variable is true when thread is paused.
+   */
+  std::atomic<bool> is_paused_{false};
+
+  /*
+   * Wait until the thread is resumed.
+   */
+  std::condition_variable pause_cv_;
 
   /**
    * Mutex used to synchronize threads using condition variable.

@@ -1,4 +1,4 @@
-// Copyright 2023 Memgraph Ltd.
+// Copyright 2024 Memgraph Ltd.
 //
 // Use of this software is governed by the Business Source License
 // included in the file licenses/BSL.txt; by using this file, you agree to be bound by the terms of the Business Source
@@ -10,6 +10,8 @@
 // licenses/APL.txt.
 
 #include "replication/replication_client.hpp"
+#include "io/network/endpoint.hpp"
+#include "io/network/fmt.hpp"
 
 namespace memgraph::replication {
 
@@ -22,19 +24,18 @@ static auto CreateClientContext(const memgraph::replication::ReplicationClientCo
 ReplicationClient::ReplicationClient(const memgraph::replication::ReplicationClientConfig &config)
     : name_{config.name},
       rpc_context_{CreateClientContext(config)},
-      rpc_client_{io::network::Endpoint(io::network::Endpoint::needs_resolving, config.ip_address, config.port),
-                  &rpc_context_},
+      rpc_client_{config.repl_server_endpoint, &rpc_context_},
       replica_check_frequency_{config.replica_check_frequency},
       mode_{config.mode} {}
 
 ReplicationClient::~ReplicationClient() {
-  auto endpoint = rpc_client_.Endpoint();
   try {
-    spdlog::trace("Closing replication client on {}:{}", endpoint.address, endpoint.port);
+    auto const &endpoint = rpc_client_.Endpoint();
+    spdlog::trace("Closing replication client on {}", endpoint);
   } catch (...) {
     // Logging can throw. Not a big deal, just ignore.
   }
-  thread_pool_.Shutdown();
+  thread_pool_.ShutDown();
 }
 
 }  // namespace memgraph::replication

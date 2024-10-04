@@ -1,7 +1,7 @@
 #!/bin/bash
 
-# Old v1 tests
-run_v1.sh
+DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+cd "$DIR"
 
 # New tests
 pushd () { command pushd "$@" > /dev/null; }
@@ -15,8 +15,9 @@ function wait_for_server {
     sleep 1
 }
 
-DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
-cd "$DIR"
+# Old v1 tests
+tests_v1="$DIR/run_v1.sh"
+$tests_v1
 
 # Create a temporary directory.
 tmpdir=/tmp/memgraph_drivers
@@ -33,10 +34,9 @@ $binary_dir/memgraph \
     --cartesian-product-enabled=false \
     --data-directory=$tmpdir \
     --query-execution-timeout-sec=5 \
-    --bolt-session-inactivity-timeout=10 \
-    --bolt-cert-file="" \
     --log-file=$tmpdir/logs/memgarph.log \
     --also-log-to-stderr \
+    --telemetry-enabled=false \
     --log-level ERROR &
 pid=$!
 wait_for_server 7687

@@ -1,4 +1,4 @@
-// Copyright 2023 Memgraph Ltd.
+// Copyright 2024 Memgraph Ltd.
 //
 // Use of this software is governed by the Business Source License
 // included in the file licenses/BSL.txt; by using this file, you agree to be bound by the terms of the Business Source
@@ -15,6 +15,7 @@
 
 #include <cppitertools/filter.hpp>
 #include <cppitertools/imap.hpp>
+#include "storage/v2/storage_mode.hpp"
 #include "utils/pmr/unordered_set.hpp"
 
 namespace memgraph::query {
@@ -139,6 +140,8 @@ std::optional<VertexAccessor> SubgraphDbAccessor::FindVertex(storage::Gid gid, s
 
 query::Graph *SubgraphDbAccessor::getGraph() { return graph_; }
 
+storage::StorageMode SubgraphDbAccessor::GetStorageMode() const noexcept { return db_accessor_.GetStorageMode(); }
+
 DbAccessor *SubgraphDbAccessor::GetAccessor() { return &db_accessor_; }
 
 VertexAccessor SubgraphVertexAccessor::GetVertexAccessor() const { return impl_; }
@@ -160,7 +163,7 @@ storage::Result<EdgeVertexAccessorResult> SubgraphVertexAccessor::OutEdges(stora
   std::vector<EdgeAccessor> resulting_edges;
   resulting_edges.reserve(filteredOutEdges.size());
   std::ranges::transform(filteredOutEdges, std::back_inserter(resulting_edges),
-                         [](auto const &edge) { return VertexAccessor::MakeEdgeAccessor(edge); });
+                         [](auto const &edge) { return EdgeAccessor(edge); });
 
   return EdgeVertexAccessorResult{.edges = std::move(resulting_edges), .expanded_count = maybe_edges->expanded_count};
 }
@@ -182,7 +185,7 @@ storage::Result<EdgeVertexAccessorResult> SubgraphVertexAccessor::InEdges(storag
   std::vector<EdgeAccessor> resulting_edges;
   resulting_edges.reserve(filteredOutEdges.size());
   std::ranges::transform(filteredOutEdges, std::back_inserter(resulting_edges),
-                         [](auto const &edge) { return VertexAccessor::MakeEdgeAccessor(edge); });
+                         [](auto const &edge) { return EdgeAccessor(edge); });
 
   return EdgeVertexAccessorResult{.edges = std::move(resulting_edges), .expanded_count = maybe_edges->expanded_count};
 }

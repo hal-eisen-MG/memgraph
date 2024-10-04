@@ -1,4 +1,4 @@
-// Copyright 2022 Memgraph Ltd.
+// Copyright 2024 Memgraph Ltd.
 //
 // Licensed as a Memgraph Enterprise file under the Memgraph Enterprise
 // License (the "License"); by using this file, you agree to be bound by the terms of the License, and you may not use
@@ -34,6 +34,8 @@
 #include <gflags/gflags.h>
 
 #include "utils/logging.hpp"
+
+#include <mutex>
 
 namespace {
 
@@ -377,7 +379,7 @@ bool Module::Startup() {
 }
 
 nlohmann::json Module::Call(const nlohmann::json &params, int timeout_millisec) {
-  std::lock_guard<std::mutex> guard(lock_);
+  auto guard = std::lock_guard{lock_};
 
   if (!params.is_object()) return {};
 
@@ -402,8 +404,6 @@ nlohmann::json Module::Call(const nlohmann::json &params, int timeout_millisec) 
   }
   return ret;
 }
-
-bool Module::IsUsed() { return !module_executable_path_.empty(); }
 
 void Module::Shutdown() {
   if (pid_ == -1) return;

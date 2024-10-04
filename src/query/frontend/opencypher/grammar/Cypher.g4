@@ -37,21 +37,30 @@ constraintQuery : ( CREATE | DROP ) CONSTRAINT ON constraint ;
 constraint : '(' nodeName=variable ':' labelName ')' ASSERT EXISTS '(' constraintPropertyList ')'
            | '(' nodeName=variable ':' labelName ')' ASSERT constraintPropertyList IS UNIQUE
            | '(' nodeName=variable ':' labelName ')' ASSERT '(' constraintPropertyList ')' IS NODE KEY
+           | '(' nodeName=variable ':' labelName ')' ASSERT variable propertyLookup IS TYPED typeConstraintType
            ;
 
 constraintPropertyList : variable propertyLookup ( ',' variable propertyLookup )* ;
 
 storageInfo : STORAGE INFO ;
 
+activeUsersInfo : ACTIVE USERS INFO ;
+
 indexInfo : INDEX INFO ;
 
 constraintInfo : CONSTRAINT INFO ;
 
+edgetypeInfo : EDGE_TYPES INFO ;
+
+nodelabelInfo : NODE_LABELS INFO ;
+
+metricsInfo : METRICS INFO ;
+
 buildInfo : BUILD INFO ;
 
-databaseInfoQuery : SHOW ( indexInfo | constraintInfo ) ;
+databaseInfoQuery : SHOW ( indexInfo | constraintInfo | edgetypeInfo | nodelabelInfo | metricsInfo ) ;
 
-systemInfoQuery : SHOW ( storageInfo | buildInfo ) ;
+systemInfoQuery : SHOW ( storageInfo | buildInfo | activeUsersInfo ) ;
 
 explainQuery : EXPLAIN cypherQuery ;
 
@@ -139,7 +148,7 @@ order : ORDER BY sortItem ( ',' sortItem )* ;
 
 skip : L_SKIP expression ;
 
-limit : LIMIT expression ;
+limit : LIMIT ( expression | parameter ) ;
 
 sortItem : expression ( ASCENDING | ASC | DESCENDING | DESC )? ;
 
@@ -175,7 +184,7 @@ relationshipDetail : '[' ( name=variable )? ( relationshipTypes )? ( variableExp
                    | '[' ( name=variable )? ( relationshipTypes )? ( variableExpansion )? relationshipLambda ( total_weight=variable )? (relationshipLambda )? ']'
                    | '[' ( name=variable )? ( relationshipTypes )? ( variableExpansion )? (properties )* ( relationshipLambda total_weight=variable )? (relationshipLambda )? ']';
 
-relationshipLambda: '(' traversed_edge=variable ',' traversed_node=variable '|' expression ')';
+relationshipLambda: '(' traversed_edge=variable ',' traversed_node=variable ( ',' accumulated_path=variable )? ( ',' accumulated_weight=variable )? '|' expression ')';
 
 variableExpansion : '*' (BFS | WSHORTEST | ALLSHORTEST)? ( expression )? ( '..' ( expression )? )? ;
 
@@ -189,7 +198,10 @@ nodeLabels : nodeLabel ( nodeLabel )* ;
 
 nodeLabel : ':' labelName ;
 
-labelName : symbolicName ;
+labelName : symbolicName
+          | parameter
+          | variable ( propertyLookup )+
+          ;
 
 relTypeName : symbolicName ;
 
@@ -246,6 +258,7 @@ atom : literal
      | parenthesizedExpression
      | functionInvocation
      | variable
+     | enumValueAccess
      ;
 
 literal : numberLiteral
@@ -282,7 +295,11 @@ reduceExpression : accumulator=variable '=' initial=expression ',' idInColl '|' 
 
 extractExpression : idInColl '|' expression ;
 
-existsExpression : patternPart ;
+existsExpression : forcePatternPart | .* ;
+
+forcePatternPart : ( variable '=' relationshipsPattern )
+                 | relationshipsPattern
+                 ;
 
 idInColl : variable IN expression ;
 
@@ -292,7 +309,7 @@ functionName : symbolicName ( '.' symbolicName )* ;
 
 listComprehension : '[' filterExpression ( '|' expression )? ']' ;
 
-patternComprehension : '[' ( variable '=' )? relationshipsPattern ( WHERE expression )? '|' expression ']' ;
+patternComprehension : '[' ( variable '=' )? relationshipsPattern ( where )? '|' resultExpr=expression ']' ;
 
 propertyLookup : '.' ( propertyKeyName ) ;
 
@@ -337,7 +354,10 @@ dropIndex : DROP INDEX ON ':' labelName ( '(' propertyKeyName ')' )? ;
 
 doubleLiteral : FloatingLiteral ;
 
+enumValueAccess : symbolicName ':' ':' symbolicName ;
+
 cypherKeyword : ALL
+              | ALLSHORTEST
               | AND
               | ANY
               | AS
@@ -348,6 +368,7 @@ cypherKeyword : ALL
               | BY
               | CALL
               | CASE
+              | COALESCE
               | CONSTRAINT
               | CONTAINS
               | COUNT
@@ -358,6 +379,7 @@ cypherKeyword : ALL
               | DESCENDING
               | DETACH
               | DISTINCT
+              | DROP
               | ELSE
               | END
               | ENDS
@@ -369,11 +391,15 @@ cypherKeyword : ALL
               | IN
               | INDEX
               | INFO
+              | INSTANCE
               | IS
+              | KB
               | KEY
-              | LIMIT
               | L_SKIP
+              | LIMIT
               | MATCH
+              | MB
+              | MEMORY
               | MERGE
               | NODE
               | NONE
@@ -386,6 +412,7 @@ cypherKeyword : ALL
               | PROFILE
               | QUERY
               | REDUCE
+              | REGISTER
               | REMOVE
               | RETURN
               | SET
@@ -395,14 +422,15 @@ cypherKeyword : ALL
               | STORAGE
               | THEN
               | TRUE
+              | TYPED
               | UNION
               | UNIQUE
+              | UNLIMITED
               | UNWIND
               | WHEN
               | WHERE
               | WITH
               | WSHORTEST
-              | ALLSHORTEST
               | XOR
               | YIELD
               ;

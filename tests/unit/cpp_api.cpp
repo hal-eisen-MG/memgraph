@@ -1,4 +1,4 @@
-// Copyright 2023 Memgraph Ltd.
+// Copyright 2024 Memgraph Ltd.
 //
 // Use of this software is governed by the Business Source License
 // included in the file licenses/BSL.txt; by using this file, you agree to be bound by the terms of the Business Source
@@ -23,22 +23,24 @@
 #include "storage/v2/disk/storage.hpp"
 #include "storage/v2/inmemory/storage.hpp"
 #include "storage/v2/view.hpp"
+#include "timezone_handler.hpp"
 
 template <typename StorageType>
 struct CppApiTestFixture : public ::testing::Test {
  protected:
-  void SetUp() override { mgp::mrd.Register(&memory); }
+  void SetUp() override { mgp::MemoryDispatcher::Register(&memory); }
 
   void TearDown() override {
     if (std::is_same<StorageType, memgraph::storage::DiskStorage>::value) {
       disk_test_utils::RemoveRocksDbDirs(testSuite);
     }
-    mgp::mrd.UnRegister();
+    mgp::MemoryDispatcher::UnRegister();
   }
 
   mgp_graph CreateGraph(const memgraph::storage::View view = memgraph::storage::View::NEW) {
     // the execution context can be null as it shouldn't be used in these tests
-    return mgp_graph{&CreateDbAccessor(memgraph::storage::IsolationLevel::SNAPSHOT_ISOLATION), view, ctx_.get()};
+    return mgp_graph{&CreateDbAccessor(memgraph::storage::IsolationLevel::SNAPSHOT_ISOLATION), view, ctx_.get(),
+                     memgraph::storage::StorageMode::IN_MEMORY_TRANSACTIONAL};
   }
 
   memgraph::query::DbAccessor &CreateDbAccessor(const memgraph::storage::IsolationLevel isolationLevel) {
@@ -60,7 +62,7 @@ struct CppApiTestFixture : public ::testing::Test {
 };
 
 using StorageTypes = ::testing::Types<memgraph::storage::InMemoryStorage, memgraph::storage::DiskStorage>;
-TYPED_TEST_CASE(CppApiTestFixture, StorageTypes);
+TYPED_TEST_SUITE(CppApiTestFixture, StorageTypes);
 
 TYPED_TEST(CppApiTestFixture, TestGraph) {
   mgp_graph raw_graph = this->CreateGraph();
@@ -406,7 +408,7 @@ TYPED_TEST(CppApiTestFixture, TestLocalTime) {
   auto value_y = mgp::Value(mgp::LocalTime("09:15:00"));
 }
 
-TYPED_TEST(CppApiTestFixture, TestLocalDateTime) {
+void test_TestLocalDateTime() {
   auto ldt_1 = mgp::LocalDateTime("2021-10-05T14:15:00");
   auto ldt_2 = mgp::LocalDateTime(2021, 10, 5, 14, 15, 0, 0, 0);
 
@@ -437,6 +439,16 @@ TYPED_TEST(CppApiTestFixture, TestLocalDateTime) {
   auto value_x = mgp::Value(ldt_1);
   // Use Value move constructor
   auto value_y = mgp::Value(mgp::LocalDateTime("2021-10-05T14:15:00"));
+}
+
+TYPED_TEST(CppApiTestFixture, TestLocalDateTime) { test_TestLocalDateTime(); }
+
+TYPED_TEST(CppApiTestFixture, TestLocalDateTimeTZ) {
+  HandleTimezone htz;
+  htz.Set("Europe/Rome");
+  test_TestLocalDateTime();
+  htz.Set("America/Los_Angeles");
+  test_TestLocalDateTime();
 }
 
 TYPED_TEST(CppApiTestFixture, TestDuration) {
@@ -499,6 +511,7 @@ TYPED_TEST(CppApiTestFixture, TestValueOperatorLessThan) {
   ASSERT_THROW(list_test < map_test, mgp::ValueException);
   ASSERT_THROW(list_test < list_test, mgp::ValueException);
 }
+
 TYPED_TEST(CppApiTestFixture, TestNumberEquality) {
   mgp::Value double_1{1.0};
   mgp::Value int_1{static_cast<int64_t>(1)};

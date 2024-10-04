@@ -1,4 +1,4 @@
-// Copyright 2023 Memgraph Ltd.
+// Copyright 2024 Memgraph Ltd.
 //
 // Use of this software is governed by the Business Source License
 // included in the file licenses/BSL.txt; by using this file, you agree to be bound by the terms of the Business Source
@@ -26,6 +26,8 @@
 #include "utils/logging.hpp"
 #include "utils/on_scope_exit.hpp"
 #include "utils/typeinfo.hpp"
+
+#include "io/network/fmt.hpp"
 
 namespace memgraph::rpc {
 
@@ -105,11 +107,15 @@ class Client {
       utils::OnScopeExit res_cleanup([&, response_data_size] { self_->client_->ShiftData(response_data_size); });
 
       utils::TypeId res_id{utils::TypeId::UNKNOWN};
-      slk::Load(&res_id, &res_reader);
-
       // NOLINTNEXTLINE(cppcoreguidelines-init-variables)
       rpc::Version version;
-      slk::Load(&version, &res_reader);
+
+      try {
+        slk::Load(&res_id, &res_reader);
+        slk::Load(&version, &res_reader);
+      } catch (const slk::SlkReaderException &) {
+        throw SlkRpcFailedException();
+      }
 
       if (version != rpc::current_version) {
         // V1 we introduced versioning with, absolutely no backwards compatibility,
@@ -184,9 +190,9 @@ class Client {
                                                  Args &&...args) {
     typename TRequestResponse::Request request(std::forward<Args>(args)...);
     auto req_type = TRequestResponse::Request::kType;
-    SPDLOG_TRACE("[RpcClient] sent {}", req_type.name);
+    spdlog::trace("[RpcClient] sent {}", req_type.name);
 
-    std::unique_lock<std::mutex> guard(mutex_);
+    auto guard = std::unique_lock{mutex_};
 
     // Check if the connection is broken (if we haven't used the client for a
     // long time the server could have died).
@@ -198,7 +204,7 @@ class Client {
     if (!client_) {
       client_.emplace(context_);
       if (!client_->Connect(endpoint_)) {
-        SPDLOG_ERROR("Couldn't connect to remote address {}", endpoint_);
+        spdlog::error("Couldn't connect to remote address {}", endpoint_);
         client_ = std::nullopt;
         throw GenericRpcFailedException();
       }
@@ -210,7 +216,6 @@ class Client {
     // Build and send the request.
     slk::Save(req_type.id, handler.GetBuilder());
     slk::Save(rpc::current_version, handler.GetBuilder());
-
     TRequestResponse::Request::Save(request, handler.GetBuilder());
 
     // Return the handler to the user.
